@@ -78,6 +78,8 @@ fun FlashControlApp() {
     var accessibilityServiceEnabled by remember {
         mutableStateOf(FlashAccessibilityServiceState.isEnabled(context))
     }
+    var showAccessibilityDisclaimer by remember { mutableStateOf(false) }
+    var hideAccessibilityDisclaimerChecked by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -235,8 +237,11 @@ fun FlashControlApp() {
                         if (!disabled) {
                             context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         }
-                    } else {
+                    } else if (accessibilitySettings.hideAccessibilityDisclaimer) {
                         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    } else {
+                        hideAccessibilityDisclaimerChecked = false
+                        showAccessibilityDisclaimer = true
                     }
                 },
                 onPickTapPoint = {
@@ -248,5 +253,22 @@ fun FlashControlApp() {
                 }
             )
         }
+    }
+
+    if (showAccessibilityDisclaimer) {
+        AccessibilityDisclaimerDialog(
+            doNotShowAgain = hideAccessibilityDisclaimerChecked,
+            onDoNotShowAgainChange = { hideAccessibilityDisclaimerChecked = it },
+            onBack = { showAccessibilityDisclaimer = false },
+            onGoToSettings = {
+                AccessibilityFlashSettingsStore.saveHideAccessibilityDisclaimer(
+                    context,
+                    hideAccessibilityDisclaimerChecked
+                )
+                accessibilitySettings = AccessibilityFlashSettingsStore.load(context)
+                showAccessibilityDisclaimer = false
+                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        )
     }
 }

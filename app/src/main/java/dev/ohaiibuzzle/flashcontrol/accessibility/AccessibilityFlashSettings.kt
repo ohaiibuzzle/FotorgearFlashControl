@@ -10,6 +10,7 @@ private const val KEY_HAS_TAP_POINT = "has_tap_point"
 private const val KEY_FLASH_OFFSET_MS = "flash_offset_ms"
 private const val KEY_OVERLAY_X = "overlay_x"
 private const val KEY_OVERLAY_Y = "overlay_y"
+private const val KEY_HIDE_ACCESSIBILITY_DISCLAIMER = "hide_accessibility_disclaimer"
 
 internal data class AccessibilityFlashSettings(
     val hasTapPoint: Boolean,
@@ -17,7 +18,8 @@ internal data class AccessibilityFlashSettings(
     val tapYRatio: Float,
     val flashOffsetMs: Int,
     val overlayX: Int,
-    val overlayY: Int
+    val overlayY: Int,
+    val hideAccessibilityDisclaimer: Boolean
 ) {
     val tapPercentLabel: String
         get() = if (hasTapPoint) {
@@ -36,7 +38,8 @@ internal object AccessibilityFlashSettingsStore {
             tapYRatio = prefs.getFloat(KEY_TAP_Y_RATIO, 0.5f).coerceIn(0f, 1f),
             flashOffsetMs = prefs.getInt(KEY_FLASH_OFFSET_MS, 0).coerceIn(-2000, 2000),
             overlayX = prefs.getInt(KEY_OVERLAY_X, 24).coerceAtLeast(0),
-            overlayY = prefs.getInt(KEY_OVERLAY_Y, 240).coerceAtLeast(0)
+            overlayY = prefs.getInt(KEY_OVERLAY_Y, 240).coerceAtLeast(0),
+            hideAccessibilityDisclaimer = prefs.getBoolean(KEY_HIDE_ACCESSIBILITY_DISCLAIMER, false)
         )
     }
 
@@ -61,6 +64,13 @@ internal object AccessibilityFlashSettingsStore {
             .edit()
             .putInt(KEY_OVERLAY_X, x.coerceAtLeast(0))
             .putInt(KEY_OVERLAY_Y, y.coerceAtLeast(0))
+            .apply()
+    }
+
+    fun saveHideAccessibilityDisclaimer(context: Context, hide: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_HIDE_ACCESSIBILITY_DISCLAIMER, hide)
             .apply()
     }
 }

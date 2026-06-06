@@ -17,10 +17,14 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.ohaiibuzzle.flashcontrol.hasBlePermissions
+import java.util.ArrayDeque
 import java.util.UUID
 
 private val FLASH_CHARACTERISTIC_UUID = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
 private val CLIENT_CONFIG_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+private const val FLASH_DEVICE_NAME = "FG-COB-FLASH"
+private const val BLE_PREFS = "cob_flash_ble"
+private const val PREF_LAST_CONNECTED_ADDRESS = "last_connected_address"
 
 data class FlashDevice(
     val address: String,
@@ -30,9 +34,13 @@ data class FlashDevice(
 class CobFlashController(private val context: Context) {
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
+    private val preferences = context.getSharedPreferences(BLE_PREFS, Context.MODE_PRIVATE)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
     private var commandCharacteristic: BluetoothGattCharacteristic? = null
+    private val pendingAutoConnectAddresses = ArrayDeque<String>()
+    private var activeConnectionAddress: String? = null
+    private var autoConnecting = false
     private var applyingToken = 0
 
     val devices = mutableStateListOf<FlashDevice>()
@@ -58,6 +66,8 @@ class CobFlashController(private val context: Context) {
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 gatt.discoverServices()
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED && autoConnecting) {
+                connectNextAutoCandidate()
             }
         }
 
@@ -66,11 +76,28 @@ class CobFlashController(private val context: Context) {
                 .flatMap { it.characteristics }
                 .firstOrNull { it.uuid == FLASH_CHARACTERISTIC_UUID }
 
-            updateState {
-                ready = commandCharacteristic != null
-                status = if (ready) "Ready on FFE1" else "FFE1 characteristic not found"
+            val characteristic = commandCharacteristic
+            if (characteristic == null) {
+                updateState {
+                    ready = false
+                    status = "FFE1 characteristic not found"
+                }
+                if (autoConnecting) {
+                    connectNextAutoCandidate()
+                }
+                return
             }
-            commandCharacteristic?.let { enableNotifications(gatt, it) }
+
+            activeConnectionAddress?.let { address ->
+                preferences.edit().putString(PREF_LAST_CONNECTED_ADDRESS, address).apply()
+            }
+            pendingAutoConnectAddresses.clear()
+            autoConnecting = false
+            updateState {
+                ready = true
+                status = "Ready on FFE1"
+            }
+            enableNotifications(gatt, characteristic)
         }
 
         override fun onCharacteristicChanged(
@@ -113,18 +140,60 @@ class CobFlashController(private val context: Context) {
             .sortedWith(compareBy<FlashDevice> { it.name.ifBlank { "~" } }.thenBy { it.address })
             .forEach { devices.add(it) }
 
-        when (devices.size) {
-            0 -> status = "No bonded Bluetooth devices found"
-            1 -> {
-                status = "One bonded device found, connecting"
-                connect(devices.first().address)
+        val lastConnectedAddress = preferences.getString(PREF_LAST_CONNECTED_ADDRESS, null)
+        val lastConnectedDevice = devices.firstOrNull { it.address == lastConnectedAddress }
+        val namedFlashDevices = devices.filter { it.name == FLASH_DEVICE_NAME }
+
+        val candidates = buildAutoConnectCandidates(lastConnectedDevice, namedFlashDevices)
+        when {
+            devices.isEmpty() -> status = "No bonded Bluetooth devices found"
+            candidates.isNotEmpty() -> {
+                pendingAutoConnectAddresses.clear()
+                pendingAutoConnectAddresses.addAll(candidates.map { it.address })
+                status = "Trying flash control device"
+                connectNextAutoCandidate()
             }
-            else -> status = "Found ${devices.size} bonded Bluetooth device(s)"
+            else -> {
+                pendingAutoConnectAddresses.clear()
+                autoConnecting = false
+                status = "Found ${devices.size} bonded Bluetooth device(s)"
+            }
         }
     }
 
     @SuppressLint("MissingPermission")
     fun connect(address: String) {
+        pendingAutoConnectAddresses.clear()
+        autoConnecting = false
+        connectInternal(address)
+    }
+
+    private fun buildAutoConnectCandidates(
+        lastConnectedDevice: FlashDevice?,
+        namedFlashDevices: List<FlashDevice>
+    ): List<FlashDevice> {
+        return buildList {
+            lastConnectedDevice?.let { add(it) }
+            namedFlashDevices
+                .filterNot { it.address == lastConnectedDevice?.address }
+                .forEach { add(it) }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectNextAutoCandidate() {
+        val address = pendingAutoConnectAddresses.pollFirst()
+        if (address == null) {
+            autoConnecting = false
+            status = "No bonded flash control service found"
+            return
+        }
+        autoConnecting = true
+        connectInternal(address)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectInternal(address: String) {
         if (!context.hasBlePermissions()) {
             status = "Bluetooth permissions required"
             return
@@ -135,6 +204,7 @@ class CobFlashController(private val context: Context) {
         }
 
         ready = false
+        activeConnectionAddress = address
         status = "Connecting to $address"
         gatt?.close()
         val device = adapter?.bondedDevices?.firstOrNull { it.address == address }
