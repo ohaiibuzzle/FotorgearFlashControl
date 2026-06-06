@@ -158,6 +158,10 @@ class CobFlashController(private val context: Context) {
         writePayload(CobFlashProtocol.triggerCommand(ms))
     }
 
+    fun sendBrightness(level: Int) {
+        writePayload(CobFlashProtocol.brightnessCommand(level))
+    }
+
     fun testFlash() {
         writePayload(CobFlashProtocol.testFlashCommand())
     }

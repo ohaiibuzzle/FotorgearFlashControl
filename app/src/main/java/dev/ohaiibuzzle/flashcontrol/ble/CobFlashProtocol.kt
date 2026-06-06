@@ -7,6 +7,10 @@ internal object CobFlashProtocol {
 
     fun triggerCommand(ms: Int): ByteArray = timedCommand(0x04, ms)
 
+    fun brightnessCommand(level: Int): ByteArray {
+        return byteArrayOf(0x01, level.coerceIn(1, 5).toByte())
+    }
+
     fun testFlashCommand(): ByteArray = byteArrayOf(0x05, 0x00)
 
     fun parseStatus(value: ByteArray): FlashStatusUpdate {

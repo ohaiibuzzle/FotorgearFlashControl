@@ -30,6 +30,18 @@ class CobFlashProtocolTest {
     }
 
     @Test
+    fun brightnessCommand_encodesBrightnessLevel() {
+        assertArrayEquals(
+            byteArrayOf(0x01, 0x05),
+            CobFlashProtocol.brightnessCommand(5)
+        )
+        assertArrayEquals(
+            byteArrayOf(0x01, 0x01),
+            CobFlashProtocol.brightnessCommand(0)
+        )
+    }
+
+    @Test
     fun brightnessStatus_mapsDeviceLevelsToPercent() {
         val expected = listOf(20, 40, 60, 80, 100)
 

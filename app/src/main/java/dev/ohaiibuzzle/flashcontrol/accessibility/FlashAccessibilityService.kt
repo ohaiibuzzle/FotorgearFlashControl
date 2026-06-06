@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -25,6 +26,16 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 class FlashAccessibilityService : AccessibilityService() {
+    companion object {
+        private var activeService: FlashAccessibilityService? = null
+
+        fun disableActiveService(): Boolean {
+            val service = activeService ?: return false
+            service.disableSelf()
+            return true
+        }
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var controller: CobFlashController
     private var windowManager: WindowManager? = null
@@ -33,6 +44,7 @@ class FlashAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        activeService = this
         controller = CobFlashController(applicationContext)
         controller.refreshBondedDevices()
         showOverlayButton()
@@ -40,10 +52,17 @@ class FlashAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        return event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || super.onKeyEvent(event)
+    }
+
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
         removeOverlayButton()
+        if (activeService === this) {
+            activeService = null
+        }
         if (::controller.isInitialized) {
             controller.close()
         }
