@@ -17,7 +17,6 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.ohaiibuzzle.flashcontrol.hasBlePermissions
-import java.util.Locale
 import java.util.UUID
 
 private val FLASH_CHARACTERISTIC_UUID = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
@@ -152,22 +151,22 @@ class CobFlashController(private val context: Context) {
     }
 
     fun sendPreFlash(ms: Int) {
-        writeCommand(0x03, ms.coerceIn(0, 0xffff))
+        writePayload(CobFlashProtocol.preFlashCommand(ms))
     }
 
     fun sendTrigger(ms: Int) {
-        writeCommand(0x04, ms.coerceIn(0, 0xffff))
+        writePayload(CobFlashProtocol.triggerCommand(ms))
     }
 
     fun testFlash() {
-        writePayload(byteArrayOf(0x05, 0x00))
+        writePayload(CobFlashProtocol.testFlashCommand())
     }
 
     fun sendTimings(preFlashMs: Int, triggerMs: Int) {
         markApplying(durationMs = 1500)
-        writeCommand(0x03, preFlashMs.coerceIn(0, 0xffff), markApplying = false)
+        writePayload(CobFlashProtocol.preFlashCommand(preFlashMs), markApplying = false)
         mainHandler.postDelayed({
-            writeCommand(0x04, triggerMs.coerceIn(0, 0xffff), markApplying = false)
+            writePayload(CobFlashProtocol.triggerCommand(triggerMs), markApplying = false)
         }, 1000)
     }
 
@@ -179,18 +178,6 @@ class CobFlashController(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun close() {
         gatt?.close()
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun writeCommand(command: Int, value: Int, markApplying: Boolean = true) {
-        writePayload(
-            byteArrayOf(
-                command.toByte(),
-                (value and 0xff).toByte(),
-                ((value shr 8) and 0xff).toByte()
-            ),
-            markApplying = markApplying
-        )
     }
 
     @SuppressLint("MissingPermission")
@@ -253,25 +240,18 @@ class CobFlashController(private val context: Context) {
         val hex = value.toHex()
         updateState {
             lastRx = hex
-            if (value.size < 2) return@updateState
-
-            val command = value[0].toInt() and 0xff
-            val payload = value[1].toInt() and 0xff
-
-            when (command) {
-                0x01 -> {
-                    brightnessPercent = payload.coerceIn(0, 5) * 20
-                    status = "Brightness status: $brightnessPercent%"
+            when (val update = CobFlashProtocol.parseStatus(value)) {
+                is FlashStatusUpdate.Brightness -> {
+                    brightnessPercent = update.percent
+                    status = "Brightness status: ${update.percent}%"
                 }
-
-                0x02 -> {
-                    batteryPercent = payload.coerceIn(0, 100)
-                    status = "Battery status: $batteryPercent%"
+                is FlashStatusUpdate.Battery -> {
+                    batteryPercent = update.percent
+                    status = "Battery status: ${update.percent}%"
                 }
-
-                0x03 -> status = "Pre-flash echo: $hex"
-                0x04 -> status = "Trigger echo: $hex"
-                else -> status = "Received $hex"
+                is FlashStatusUpdate.PreFlashEcho -> status = "Pre-flash echo: ${update.hex}"
+                is FlashStatusUpdate.TriggerEcho -> status = "Trigger echo: ${update.hex}"
+                is FlashStatusUpdate.Unknown -> status = "Received ${update.hex}"
             }
         }
     }
@@ -282,11 +262,5 @@ class CobFlashController(private val context: Context) {
         } else {
             mainHandler.post(block)
         }
-    }
-}
-
-private fun ByteArray.toHex(): String {
-    return joinToString(separator = " ") { byte ->
-        "%02X".format(Locale.US, byte.toInt() and 0xff)
     }
 }

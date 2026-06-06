@@ -1,8 +1,11 @@
 package dev.ohaiibuzzle.flashcontrol.ui
 
 import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -37,6 +41,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.ohaiibuzzle.flashcontrol.accessibility.AccessibilityFlashSettings
+import dev.ohaiibuzzle.flashcontrol.accessibility.AccessibilityFlashSettingsStore
+import dev.ohaiibuzzle.flashcontrol.accessibility.TapPointPickerActivity
 import dev.ohaiibuzzle.flashcontrol.ble.CobFlashController
 import dev.ohaiibuzzle.flashcontrol.hasBlePermissions
 import dev.ohaiibuzzle.flashcontrol.requiredBlePermissions
@@ -62,6 +69,9 @@ fun FlashControlApp() {
     var devicesExpanded by remember { mutableStateOf(false) }
     var preFlashTouched by remember { mutableStateOf(false) }
     var triggerTouched by remember { mutableStateOf(false) }
+    var accessibilitySettings by remember {
+        mutableStateOf(AccessibilityFlashSettingsStore.load(context))
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -71,6 +81,11 @@ fun FlashControlApp() {
         } else {
             controller.status = "Bluetooth permissions denied"
         }
+    }
+    val tapPointPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        accessibilitySettings = AccessibilityFlashSettingsStore.load(context)
     }
 
     LaunchedEffect(Unit) {
@@ -114,6 +129,7 @@ fun FlashControlApp() {
             modifier = Modifier
                 .padding(padding)
                 .padding(16.dp)
+                .verticalScroll(rememberScrollState())
                 .fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -175,6 +191,20 @@ fun FlashControlApp() {
                     triggerTouched = true
                     triggerMs = it
                     preferences.edit().putInt(PREF_TRIGGER_MS, it).apply()
+                }
+            )
+
+            AccessibilityPanel(
+                settings = accessibilitySettings,
+                onOpenAccessibilitySettings = {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                },
+                onPickTapPoint = {
+                    tapPointPickerLauncher.launch(Intent(context, TapPointPickerActivity::class.java))
+                },
+                onFlashOffsetChange = { offsetMs ->
+                    AccessibilityFlashSettingsStore.saveFlashOffset(context, offsetMs)
+                    accessibilitySettings = AccessibilityFlashSettingsStore.load(context)
                 }
             )
         }
@@ -304,6 +334,44 @@ private fun CommandPanel(
             ) {
                 Text("Test Flash")
             }
+        }
+    }
+}
+
+@Composable
+private fun AccessibilityPanel(
+    settings: AccessibilityFlashSettings,
+    onOpenAccessibilitySettings: () -> Unit,
+    onPickTapPoint: () -> Unit,
+    onFlashOffsetChange: (Int) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text("Floating shutter button", fontWeight = FontWeight.SemiBold)
+            Text("Tap point: ${settings.tapPercentLabel}")
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = onPickTapPoint) {
+                    Text("Pick Point")
+                }
+                OutlinedButton(onClick = onOpenAccessibilitySettings) {
+                    Text("Enable Service")
+                }
+            }
+            CommandSlider(
+                label = "Flash offset",
+                value = settings.flashOffsetMs,
+                range = -2000..2000,
+                step = 100,
+                enabled = true,
+                onChange = onFlashOffsetChange
+            )
         }
     }
 }

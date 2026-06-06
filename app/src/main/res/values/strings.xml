@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Fotorgear Flash</string>
+    <string name="flash_accessibility_service_description">Shows a floating flash button and taps the saved shutter point.</string>
 </resources>
