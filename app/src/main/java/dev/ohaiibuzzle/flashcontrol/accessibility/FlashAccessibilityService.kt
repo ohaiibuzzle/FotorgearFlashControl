@@ -20,6 +20,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.widget.TextView
 import android.widget.Toast
 import dev.ohaiibuzzle.flashcontrol.ble.CobFlashController
+import java.security.Key
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -53,7 +54,9 @@ class FlashAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        return event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || super.onKeyEvent(event)
+        return event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+                event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+                super.onKeyEvent(event)
     }
 
     override fun onInterrupt() = Unit
