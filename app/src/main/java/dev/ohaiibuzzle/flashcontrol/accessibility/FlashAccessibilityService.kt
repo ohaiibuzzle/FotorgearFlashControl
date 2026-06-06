@@ -2,17 +2,21 @@ package dev.ohaiibuzzle.flashcontrol.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.graphics.Color
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Button
+import android.widget.TextView
 import android.widget.Toast
 import dev.ohaiibuzzle.flashcontrol.ble.CobFlashController
 import kotlin.math.abs
@@ -25,6 +29,7 @@ class FlashAccessibilityService : AccessibilityService() {
     private lateinit var controller: CobFlashController
     private var windowManager: WindowManager? = null
     private var overlayButton: View? = null
+    private var suppressOverlayTapUntilMs = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -50,12 +55,21 @@ class FlashAccessibilityService : AccessibilityService() {
 
         windowManager = getSystemService(WindowManager::class.java)
         val settings = AccessibilityFlashSettingsStore.load(this)
-        val button = Button(this).apply {
-            text = "Flash"
+        val buttonSize = 72.dp
+        val button = TextView(this).apply {
+            text = "●"
             contentDescription = "Flash and tap shutter"
-            minWidth = 0
-            minHeight = 0
-            setPadding(24, 12, 24, 12)
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            textSize = 28f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.rgb(229, 57, 53))
+                setStroke(4.dp, Color.WHITE)
+            }
+            elevation = 8.dp.toFloat()
             setOnLongClickListener {
                 controller.refreshBondedDevices()
                 Toast.makeText(this@FlashAccessibilityService, "Reconnecting flash", Toast.LENGTH_SHORT).show()
@@ -63,8 +77,8 @@ class FlashAccessibilityService : AccessibilityService() {
             }
         }
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            buttonSize,
+            buttonSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -123,7 +137,30 @@ class FlashAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0L, 80L))
             .build()
-        dispatchGesture(gesture, null, null)
+        suppressOverlayTapUntilMs = SystemClock.uptimeMillis() + 600L
+        overlayButton?.visibility = View.INVISIBLE
+        val dispatched = dispatchGesture(
+            gesture,
+            object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    restoreOverlayButton()
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    restoreOverlayButton()
+                }
+            },
+            mainHandler
+        )
+        if (!dispatched) {
+            restoreOverlayButton()
+        } else {
+            mainHandler.postDelayed({ restoreOverlayButton() }, 250L)
+        }
+    }
+
+    private fun restoreOverlayButton() {
+        overlayButton?.visibility = View.VISIBLE
     }
 
     private inner class DraggableOverlayTouchListener(
@@ -146,6 +183,9 @@ class FlashAccessibilityService : AccessibilityService() {
         override fun onTouch(view: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (SystemClock.uptimeMillis() < suppressOverlayTapUntilMs) {
+                        return true
+                    }
                     downRawX = event.rawX
                     downRawY = event.rawY
                     startX = params.x
@@ -218,4 +258,7 @@ class FlashAccessibilityService : AccessibilityService() {
             AccessibilityFlashSettingsStore.saveOverlayPosition(this, clampedX, clampedY)
         }
     }
+
+    private val Int.dp: Int
+        get() = (this * resources.displayMetrics.density).roundToInt()
 }
