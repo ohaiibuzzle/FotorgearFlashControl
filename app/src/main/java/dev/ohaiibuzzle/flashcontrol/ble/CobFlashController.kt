@@ -31,15 +31,21 @@ data class FlashDevice(
     val name: String
 )
 
+private data class FlashConnection(
+    val address: String,
+    val gatt: BluetoothGatt,
+    var commandCharacteristic: BluetoothGattCharacteristic? = null,
+    var connected: Boolean = false,
+    var ready: Boolean = false
+)
+
 class CobFlashController(private val context: Context) {
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
     private val preferences = context.getSharedPreferences(BLE_PREFS, Context.MODE_PRIVATE)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var gatt: BluetoothGatt? = null
-    private var commandCharacteristic: BluetoothGattCharacteristic? = null
+    private val connections = mutableMapOf<String, FlashConnection>()
     private val pendingAutoConnectAddresses = ArrayDeque<String>()
-    private var activeConnectionAddress: String? = null
     private var autoConnecting = false
     private var applyingToken = 0
 
@@ -47,6 +53,8 @@ class CobFlashController(private val context: Context) {
     var status by mutableStateOf("Idle")
     var connected by mutableStateOf(false)
     var ready by mutableStateOf(false)
+    var readyDeviceCount by mutableStateOf(0)
+    var connectionStateVersion by mutableStateOf(0)
     var applying by mutableStateOf(false)
     var batteryPercent by mutableStateOf<Int?>(null)
     var brightnessPercent by mutableStateOf<Int?>(null)
@@ -55,9 +63,15 @@ class CobFlashController(private val context: Context) {
 
     private val gattCallback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, statusCode: Int, newState: Int) {
+            val address = gatt.device.address
+            val connection = connections[address]
             updateState {
-                connected = newState == BluetoothProfile.STATE_CONNECTED
-                ready = false
+                connection?.connected = newState == BluetoothProfile.STATE_CONNECTED
+                if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    connection?.ready = false
+                    connection?.commandCharacteristic = null
+                }
+                refreshConnectionState()
                 status = when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> "Connected, discovering services"
                     BluetoothProfile.STATE_DISCONNECTED -> "Disconnected"
@@ -72,32 +86,41 @@ class CobFlashController(private val context: Context) {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, statusCode: Int) {
-            commandCharacteristic = gatt.services
+            val address = gatt.device.address
+            val connection = connections[address] ?: FlashConnection(address, gatt).also {
+                connections[address] = it
+            }
+            val characteristic = gatt.services
                 .flatMap { it.characteristics }
                 .firstOrNull { it.uuid == FLASH_CHARACTERISTIC_UUID }
 
-            val characteristic = commandCharacteristic
             if (characteristic == null) {
+                connection.ready = false
+                connection.commandCharacteristic = null
+                connections.remove(address)
                 updateState {
-                    ready = false
-                    status = "FFE1 characteristic not found"
+                    refreshConnectionState()
+                    status = "FFE1 characteristic not found on $address"
                 }
+                gatt.close()
                 if (autoConnecting) {
                     connectNextAutoCandidate()
                 }
                 return
             }
 
-            activeConnectionAddress?.let { address ->
-                preferences.edit().putString(PREF_LAST_CONNECTED_ADDRESS, address).apply()
-            }
-            pendingAutoConnectAddresses.clear()
-            autoConnecting = false
+            preferences.edit().putString(PREF_LAST_CONNECTED_ADDRESS, address).apply()
+            connection.connected = true
+            connection.ready = true
+            connection.commandCharacteristic = characteristic
             updateState {
-                ready = true
-                status = "Ready on FFE1"
+                refreshConnectionState()
+                status = readyStatus()
             }
             enableNotifications(gatt, characteristic)
+            if (autoConnecting) {
+                connectNextAutoCandidate()
+            }
         }
 
         override fun onCharacteristicChanged(
@@ -163,8 +186,7 @@ class CobFlashController(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun connect(address: String) {
-        pendingAutoConnectAddresses.clear()
-        autoConnecting = false
+        pendingAutoConnectAddresses.remove(address)
         connectInternal(address)
     }
 
@@ -185,7 +207,14 @@ class CobFlashController(private val context: Context) {
         val address = pendingAutoConnectAddresses.pollFirst()
         if (address == null) {
             autoConnecting = false
-            status = "No bonded flash control service found"
+            updateState {
+                refreshConnectionState()
+                status = if (readyDeviceCount > 0) readyStatus() else "No bonded flash control service found"
+            }
+            return
+        }
+        if (connections[address]?.ready == true) {
+            connectNextAutoCandidate()
             return
         }
         autoConnecting = true
@@ -203,21 +232,23 @@ class CobFlashController(private val context: Context) {
             return
         }
 
-        ready = false
-        activeConnectionAddress = address
-        status = "Connecting to $address"
-        gatt?.close()
+        updateState {
+            refreshConnectionState()
+            status = "Connecting to $address"
+        }
         val device = adapter?.bondedDevices?.firstOrNull { it.address == address }
         if (device == null) {
             status = "Device is not bonded"
             return
         }
 
-        gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        connections[address]?.gatt?.close()
+        val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } else {
             device.connectGatt(context, false, gattCallback)
         }
+        connections[address] = FlashConnection(address = address, gatt = gatt)
     }
 
     fun sendPreFlash(ms: Int) {
@@ -244,43 +275,74 @@ class CobFlashController(private val context: Context) {
         }, 1000)
     }
 
+    fun isDeviceConnected(address: String): Boolean {
+        return connections[address]?.let { it.connected || it.ready } == true
+    }
+
+    @SuppressLint("MissingPermission")
+    fun disconnect(address: String) {
+        pendingAutoConnectAddresses.remove(address)
+        connections.remove(address)?.let { connection ->
+            connection.gatt.disconnect()
+            connection.gatt.close()
+        }
+        refreshConnectionState()
+        status = if (readyDeviceCount > 0) readyStatus() else "Disconnected"
+    }
+
     @SuppressLint("MissingPermission")
     fun disconnect() {
-        gatt?.disconnect()
+        pendingAutoConnectAddresses.clear()
+        autoConnecting = false
+        connections.values.forEach { connection ->
+            connection.gatt.disconnect()
+            connection.gatt.close()
+        }
+        connections.clear()
+        refreshConnectionState()
+        status = "Disconnected"
     }
 
     @SuppressLint("MissingPermission")
     fun close() {
-        gatt?.close()
+        connections.values.forEach { it.gatt.close() }
+        connections.clear()
+        refreshConnectionState()
     }
 
     @SuppressLint("MissingPermission")
     private fun writePayload(payload: ByteArray, markApplying: Boolean = true) {
-        val gatt = gatt
-        val characteristic = commandCharacteristic
-        if (gatt == null || characteristic == null) {
+        val readyConnections = connections.values.filter { it.ready && it.commandCharacteristic != null }
+        if (readyConnections.isEmpty()) {
             status = "Not connected to FFE1"
             return
         }
 
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(
-                characteristic,
-                payload,
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            ) == BluetoothGatt.GATT_SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
-            characteristic.value = payload
-            @Suppress("DEPRECATION")
-            gatt.writeCharacteristic(characteristic)
+        val successCount = readyConnections.count { connection ->
+            val characteristic = connection.commandCharacteristic ?: return@count false
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                connection.gatt.writeCharacteristic(
+                    characteristic,
+                    payload,
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                ) == BluetoothGatt.GATT_SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.value = payload
+                @Suppress("DEPRECATION")
+                connection.gatt.writeCharacteristic(characteristic)
+            }
         }
         if (markApplying) {
             markApplying()
         }
         lastTx = payload.toHex()
-        status = if (ok) "Sent ${payload.toHex()}" else "Write failed to start"
+        status = if (successCount == readyConnections.size) {
+            "Sent ${payload.toHex()} to ${readyConnections.size} flash device(s)"
+        } else {
+            "Write started on $successCount/${readyConnections.size} flash device(s)"
+        }
     }
 
     private fun markApplying(durationMs: Long = 700) {
@@ -328,6 +390,17 @@ class CobFlashController(private val context: Context) {
                 is FlashStatusUpdate.Unknown -> status = "Received ${update.hex}"
             }
         }
+    }
+
+    private fun refreshConnectionState() {
+        connected = connections.values.any { it.connected }
+        readyDeviceCount = connections.values.count { it.ready }
+        ready = readyDeviceCount > 0
+        connectionStateVersion += 1
+    }
+
+    private fun readyStatus(): String {
+        return "Ready on $readyDeviceCount flash device(s)"
     }
 
     private fun updateState(block: () -> Unit) {

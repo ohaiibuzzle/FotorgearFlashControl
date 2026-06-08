@@ -37,6 +37,7 @@ internal fun DeviceList(
         shape = RoundedCornerShape(8.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
+        val connectionStateVersion = controller.connectionStateVersion
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Devices", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
@@ -63,6 +64,9 @@ internal fun DeviceList(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(controller.devices, key = { it.address }) { device ->
+                        @Suppress("UNUSED_VARIABLE")
+                        val observedConnectionState = connectionStateVersion
+                        val isConnected = controller.isDeviceConnected(device.address)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
@@ -71,8 +75,14 @@ internal fun DeviceList(
                                 Text(device.name.ifBlank { "(unnamed)" }, fontWeight = FontWeight.Medium)
                                 Text(device.address)
                             }
-                            Button(onClick = { controller.connect(device.address) }) {
-                                Text("Connect")
+                            if (isConnected) {
+                                OutlinedButton(onClick = { controller.disconnect(device.address) }) {
+                                    Text("Disconnect")
+                                }
+                            } else {
+                                Button(onClick = { controller.connect(device.address) }) {
+                                    Text("Connect")
+                                }
                             }
                         }
                         HorizontalDivider()
