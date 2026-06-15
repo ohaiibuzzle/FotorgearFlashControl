@@ -25,6 +25,8 @@ private val CLIENT_CONFIG_UUID = UUID.fromString("00002902-0000-1000-8000-00805f
 private const val FLASH_DEVICE_NAME = "FG-COB-FLASH"
 private const val BLE_PREFS = "cob_flash_ble"
 private const val PREF_LAST_CONNECTED_ADDRESS = "last_connected_address"
+private const val PREF_LAST_CONNECTED_ADDRESSES = "last_connected_addresses"
+private const val AUTO_CONNECT_TIMEOUT_MS = 7000L
 
 data class FlashDevice(
     val address: String,
@@ -36,7 +38,8 @@ private data class FlashConnection(
     val gatt: BluetoothGatt,
     var commandCharacteristic: BluetoothGattCharacteristic? = null,
     var connected: Boolean = false,
-    var ready: Boolean = false
+    var ready: Boolean = false,
+    var batteryPercent: Int? = null
 )
 
 class CobFlashController(private val context: Context) {
@@ -47,6 +50,8 @@ class CobFlashController(private val context: Context) {
     private val connections = mutableMapOf<String, FlashConnection>()
     private val pendingAutoConnectAddresses = ArrayDeque<String>()
     private var autoConnecting = false
+    private var activeAutoConnectAddress: String? = null
+    private var autoConnectToken = 0
     private var applyingToken = 0
 
     val devices = mutableStateListOf<FlashDevice>()
@@ -80,7 +85,11 @@ class CobFlashController(private val context: Context) {
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 gatt.discoverServices()
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED && autoConnecting) {
+            } else if (
+                newState == BluetoothProfile.STATE_DISCONNECTED &&
+                autoConnecting &&
+                activeAutoConnectAddress == address
+            ) {
                 connectNextAutoCandidate()
             }
         }
@@ -103,13 +112,13 @@ class CobFlashController(private val context: Context) {
                     status = "FFE1 characteristic not found on $address"
                 }
                 gatt.close()
-                if (autoConnecting) {
+                if (autoConnecting && activeAutoConnectAddress == address) {
                     connectNextAutoCandidate()
                 }
                 return
             }
 
-            preferences.edit().putString(PREF_LAST_CONNECTED_ADDRESS, address).apply()
+            rememberConnectedAddress(address)
             connection.connected = true
             connection.ready = true
             connection.commandCharacteristic = characteristic
@@ -118,7 +127,7 @@ class CobFlashController(private val context: Context) {
                 status = readyStatus()
             }
             enableNotifications(gatt, characteristic)
-            if (autoConnecting) {
+            if (autoConnecting && activeAutoConnectAddress == address) {
                 connectNextAutoCandidate()
             }
         }
@@ -128,7 +137,7 @@ class CobFlashController(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            handleIncoming(value)
+            handleIncoming(gatt.device.address, value)
         }
 
         @Deprecated("Used by Android 12 and lower")
@@ -137,7 +146,7 @@ class CobFlashController(private val context: Context) {
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
         ) {
-            handleIncoming(characteristic.value ?: return)
+            handleIncoming(gatt.device.address, characteristic.value ?: return)
         }
     }
 
@@ -163,11 +172,12 @@ class CobFlashController(private val context: Context) {
             .sortedWith(compareBy<FlashDevice> { it.name.ifBlank { "~" } }.thenBy { it.address })
             .forEach { devices.add(it) }
 
-        val lastConnectedAddress = preferences.getString(PREF_LAST_CONNECTED_ADDRESS, null)
-        val lastConnectedDevice = devices.firstOrNull { it.address == lastConnectedAddress }
+        val lastConnectedDevices = loadLastConnectedAddresses().mapNotNull { address ->
+            devices.firstOrNull { it.address == address }
+        }
         val namedFlashDevices = devices.filter { it.name == FLASH_DEVICE_NAME }
 
-        val candidates = buildAutoConnectCandidates(lastConnectedDevice, namedFlashDevices)
+        val candidates = buildAutoConnectCandidates(lastConnectedDevices, namedFlashDevices)
         when {
             devices.isEmpty() -> status = "No bonded Bluetooth devices found"
             candidates.isNotEmpty() -> {
@@ -191,13 +201,14 @@ class CobFlashController(private val context: Context) {
     }
 
     private fun buildAutoConnectCandidates(
-        lastConnectedDevice: FlashDevice?,
+        lastConnectedDevices: List<FlashDevice>,
         namedFlashDevices: List<FlashDevice>
     ): List<FlashDevice> {
         return buildList {
-            lastConnectedDevice?.let { add(it) }
+            lastConnectedDevices.forEach { add(it) }
+            val lastConnectedAddresses = lastConnectedDevices.map { it.address }.toSet()
             namedFlashDevices
-                .filterNot { it.address == lastConnectedDevice?.address }
+                .filterNot { it.address in lastConnectedAddresses }
                 .forEach { add(it) }
         }
     }
@@ -207,6 +218,8 @@ class CobFlashController(private val context: Context) {
         val address = pendingAutoConnectAddresses.pollFirst()
         if (address == null) {
             autoConnecting = false
+            activeAutoConnectAddress = null
+            autoConnectToken += 1
             updateState {
                 refreshConnectionState()
                 status = if (readyDeviceCount > 0) readyStatus() else "No bonded flash control service found"
@@ -218,7 +231,24 @@ class CobFlashController(private val context: Context) {
             return
         }
         autoConnecting = true
+        activeAutoConnectAddress = address
+        val token = ++autoConnectToken
         connectInternal(address)
+        mainHandler.postDelayed({
+            if (
+                autoConnecting &&
+                activeAutoConnectAddress == address &&
+                autoConnectToken == token &&
+                connections[address]?.ready != true
+            ) {
+                connections.remove(address)?.gatt?.close()
+                updateState {
+                    refreshConnectionState()
+                    status = "Timed out connecting to $address"
+                }
+                connectNextAutoCandidate()
+            }
+        }, AUTO_CONNECT_TIMEOUT_MS)
     }
 
     @SuppressLint("MissingPermission")
@@ -277,6 +307,10 @@ class CobFlashController(private val context: Context) {
 
     fun isDeviceConnected(address: String): Boolean {
         return connections[address]?.let { it.connected || it.ready } == true
+    }
+
+    fun deviceBatteryPercent(address: String): Int? {
+        return connections[address]?.batteryPercent
     }
 
     @SuppressLint("MissingPermission")
@@ -372,7 +406,7 @@ class CobFlashController(private val context: Context) {
         }
     }
 
-    private fun handleIncoming(value: ByteArray) {
+    private fun handleIncoming(address: String, value: ByteArray) {
         val hex = value.toHex()
         updateState {
             lastRx = hex
@@ -383,6 +417,8 @@ class CobFlashController(private val context: Context) {
                 }
                 is FlashStatusUpdate.Battery -> {
                     batteryPercent = update.percent
+                    connections[address]?.batteryPercent = update.percent
+                    connectionStateVersion += 1
                     status = "Battery status: ${update.percent}%"
                 }
                 is FlashStatusUpdate.PreFlashEcho -> status = "Pre-flash echo: ${update.hex}"
@@ -390,6 +426,29 @@ class CobFlashController(private val context: Context) {
                 is FlashStatusUpdate.Unknown -> status = "Received ${update.hex}"
             }
         }
+    }
+
+    private fun loadLastConnectedAddresses(): List<String> {
+        val rememberedAddresses = preferences.getString(PREF_LAST_CONNECTED_ADDRESSES, null)
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { BluetoothAdapter.checkBluetoothAddress(it) }
+            .orEmpty()
+        if (rememberedAddresses.isNotEmpty()) {
+            return rememberedAddresses
+        }
+
+        return listOfNotNull(preferences.getString(PREF_LAST_CONNECTED_ADDRESS, null))
+            .filter { BluetoothAdapter.checkBluetoothAddress(it) }
+    }
+
+    private fun rememberConnectedAddress(address: String) {
+        val updatedAddresses = (listOf(address) + loadLastConnectedAddresses().filterNot { it == address })
+            .take(8)
+        preferences.edit()
+            .putString(PREF_LAST_CONNECTED_ADDRESS, address)
+            .putString(PREF_LAST_CONNECTED_ADDRESSES, updatedAddresses.joinToString(","))
+            .apply()
     }
 
     private fun refreshConnectionState() {

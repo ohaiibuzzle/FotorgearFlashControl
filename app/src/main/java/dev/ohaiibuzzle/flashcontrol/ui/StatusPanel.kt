@@ -52,7 +52,6 @@ internal fun StatusPanel(controller: CobFlashController) {
         ) {
             Text(controller.status, fontWeight = FontWeight.Medium)
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                Text("Battery: ${controller.batteryPercent?.let { "$it%" } ?: "--"}")
                 Text("Brightness: ${controller.brightnessPercent?.let { "$it%" } ?: "--"}")
             }
             OutlinedButton(onClick = { expanded = !expanded }) {

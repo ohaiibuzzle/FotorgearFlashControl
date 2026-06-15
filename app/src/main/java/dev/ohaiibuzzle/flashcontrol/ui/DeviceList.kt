@@ -67,6 +67,7 @@ internal fun DeviceList(
                         @Suppress("UNUSED_VARIABLE")
                         val observedConnectionState = connectionStateVersion
                         val isConnected = controller.isDeviceConnected(device.address)
+                        val batteryPercent = controller.deviceBatteryPercent(device.address)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
@@ -74,6 +75,7 @@ internal fun DeviceList(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(device.name.ifBlank { "(unnamed)" }, fontWeight = FontWeight.Medium)
                                 Text(device.address)
+                                Text("Battery: ${batteryPercent?.let { "$it%" } ?: "--"}")
                             }
                             if (isConnected) {
                                 OutlinedButton(onClick = { controller.disconnect(device.address) }) {

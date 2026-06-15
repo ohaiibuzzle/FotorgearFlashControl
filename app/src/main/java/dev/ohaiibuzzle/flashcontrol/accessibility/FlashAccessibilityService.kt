@@ -20,7 +20,6 @@ import android.view.accessibility.AccessibilityEvent
 import android.widget.TextView
 import android.widget.Toast
 import dev.ohaiibuzzle.flashcontrol.ble.CobFlashController
-import java.security.Key
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -126,12 +125,12 @@ class FlashAccessibilityService : AccessibilityService() {
 
     private fun triggerFlashAndTap() {
         val settings = AccessibilityFlashSettingsStore.load(this)
+        controller.refreshBondedDevices()
         if (!settings.hasTapPoint) {
             Toast.makeText(this, "Pick a shutter point in the app first", Toast.LENGTH_SHORT).show()
             return
         }
         if (!controller.ready) {
-            controller.refreshBondedDevices()
             Toast.makeText(this, "Flash is not ready yet", Toast.LENGTH_SHORT).show()
         }
 
